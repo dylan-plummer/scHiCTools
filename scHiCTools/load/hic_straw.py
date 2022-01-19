@@ -494,7 +494,8 @@ def straw(norm, infile, chr1loc, chr2loc, unit, binsize, is_synapse=False):
         myrange = r.headers['content-range'].split('/')
         totalbytes = myrange[1]
     else:
-        req = open(infile, 'rb')
+        print('File path should start with http...')
+        return -1
 
     if not (norm=="NONE" or norm=="VC" or norm=="VC_SQRT" or norm=="KR"):
         print("Norm specified incorrectly, must be one of <NONE/VC/VC_SQRT/KR>\nUsage: straw <NONE/VC/VC_SQRT/KR> <hicFile(s)> <chr1>[:x1:x2] <chr2>[:y1:y2] <BP/FRAG> <binsize>\n")

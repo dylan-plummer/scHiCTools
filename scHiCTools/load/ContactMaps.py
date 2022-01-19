@@ -1,138 +1,100 @@
 
 import numpy as np
 import pandas as pd
-import sys
 from copy import deepcopy
-from scipy.sparse import coo_matrix
+import networkx as nx
+import scipy.sparse
+from tqdm import tqdm
+from scipy.cluster.hierarchy import linkage
+from scipy.sparse import coo_matrix, csgraph, csr_matrix
+from sklearn.decomposition import NMF
+from sklearn.manifold import MDS as sklearn_MDS
 from .load_hic_file import get_chromosome_lengths, load_HiC
 from ..embedding import pairwise_distances, MDS, tSNE, PHATE, SpectralEmbedding, PCA
 from .processing_utils import matrix_operation
 # from ..analysis import scatter
 from ..analysis import kmeans, spectral_clustering, HAC
 import matplotlib.pyplot as plt
-try:
-    import multiprocessing as mp
-except:
-    mp=None
-
-def add_cell(ch, idx, file, resolution, chromosome_lengths,
-             store_full_map, keep_n_strata, format, customized_format,
-             header, adjust_resolution, map_filter, sparse, gzip, operations, sep=' ',):
-    if ('ch' in ch) and ('chr' not in ch):
-        ch=ch.replace("ch", "chr")
-    mat, strata = load_HiC(
-        file, genome_length=chromosome_lengths,
-        format=format, custom_format=customized_format,
-        header=header, chromosome=ch, resolution=resolution,
-        resolution_adjust=adjust_resolution,
-        map_filter=map_filter, sparse=sparse, gzip=gzip,
-        keep_n_strata=keep_n_strata, operations=operations, sep=sep)
-        
-    contacts=np.sum(mat)/2+ np.trace(mat)/2
-
-    short_range=sum([np.sum(mat[i,i:i+int(2000000/resolution)]) for i in range(len(mat))])
-    mitotic=sum([np.sum(mat[i,i+int(2000000/resolution):i+int(12000000/resolution)]) for i in range(len(mat))])
-    
-    # if not keep_n_strata:
-        # self.strata[ch][idx] = strata
-        # for strata_idx, stratum in enumerate(strata):
-        #     self.strata[ch][strata_idx][idx, :] = stratum
-    if store_full_map:
-        return [contacts, short_range, mitotic, strata, mat]
-    else:
-        return [contacts, short_range, mitotic, strata]
-    # else:
-    #     raise ValueError('`keep_n_strata` should be an positive intger.')
-    
+import seaborn as sns
 
 
 class scHiCs:
     def __init__(self, list_of_files, reference_genome, resolution,
-                 adjust_resolution=True, sparse=False, chromosomes='all',
-                 format='customized', keep_n_strata=10, store_full_map=False,
+                 adjust_resolution=True, sparse=False, chromosomes='all', downsample_depth=None, read_depths=None,
+                 format='customized', keep_n_strata=10, strata_offset=0, exclusive_strata=False, store_full_map=False, strata_downsample=None, strata_n_depth=None,
                  operations=None, header=0, customized_format=None,
-                 map_filter=0., gzip=False, sep=' ',
-                 parallelize=False, n_processes=None, **kwargs):
+                 map_filter=0., gzip=False, **kwargs):
         """
 
         Parameters
         ----------
         list_of_files : list
             List of HiC file paths.
-            
+
         reference_genome : str or dict
             Now supporting 'mm9', 'mm10', 'hg19', 'hg38',
-            if using other references,you can simply provide the chromosome name 
+            if using other references,you can simply provide the chromosome name
             and corresponding size (bp) with a dictionary in Python.
             e.g. {'chr1': 150000000, 'chr2': 130000000, 'chr3': 200000000}
-            
+
         resolution : int
             The resolution to separate genome into bins. If using .hic file format,
             the given resolution must match with the resolutions in .hic file.
-            
+
         adjust_resolution : bool, optional
-            Whether to adjust resolution for input file. 
+            Whether to adjust resolution for input file.
             Sometimes the input file is already in the proper resolution
             (e.g. position 3000000 has already been changed to 6 in 500kb resolution),
             then you can set `adjust_resolution=False`.  The default is True.
-            
+
         sparse : bool, optional
             Whether to use sparse matrix to store (only effective when max_distance=None). The default is False.
-            
+
         chromosomes : list or str, optional
-            Chromosomes to use, 
+            Chromosomes to use,
             eg. ['chr1', 'chr2'], or just 'except Y', 'except XY','all',
             which means chr 1-19 + XY for mouse and chr 1-22 + XY for human.
             The default is 'all'.
-            
+
         format : str, optional
             HiC files' format.
             e.g., '.hic', 'customized', '.cool'. The default is 'customized'.
-            
+
         keep_n_strata : int, optional
-            Only consider contacts within this genomic distance. 
-            If `None`, it will store full matrices in numpy matrix or 
+            Only consider contacts within this genomic distance.
+            If `None`, it will store full matrices in numpy matrix or
             scipy sparse format, which will use too much memory sometimes.
             The default is 10.
-            
+
         store_full_map : bool, optional
             Whether store contact maps. The default is False.
-            
+
         operations : list, optional
             The methods use for pre-processing or smoothing the maps given in a list.
-            The operations will happen in the given order. 
+            The operations will happen in the given order.
             Operations: 'convolution', 'random_walk', 'network_enhancing'.
             For pre-processing and smoothing operations, sometimes you need additional arguments.
-            You can check docstrings for pre-processing and smoothing for more information. 
+            You can check docstrings for pre-processing and smoothing for more information.
             The default is None.
-        
+
         header : int, optional
-            The number of header line(s). 
+            The number of header line(s).
             If `header=0`, HiC files do not have header.
             The default is 0.
-            
+
         customized_format : int or list, optional
             Format for each line. The default is None.
-            
+
         map_filter : float, optional
-            The threshold to filter some reads by map quality. 
+            The threshold to filter some reads by map quality.
             The default is 0..
-            
+
         gzip : bool, optional
-            If the HiC files are zip files. 
-            If `True`, the HiC files are zip files. 
+            If the HiC files are zip files.
+            If `True`, the HiC files are zip files.
             The default is False.
-        
-        parallelize : bool, optional
-            If `True`, parallelize file reading process. 
-            The default is False. 
-        
-        n_processes : int, optional
-            Number of cores to use in parallelization.
-            When n_processes=Null,  use number of CPUs -1 for parallelization.
-            The default is Null.
-            
-        **kwargs : 
+
+        **kwargs :
             Other arguments specify smoothing methods passed to function.
             See `scHiCTools.load.processing_utils.matrix_operation` function.
 
@@ -140,7 +102,7 @@ class scHiCs:
         Returns
         -------
         None.
-        
+
 
         """
 
@@ -148,19 +110,34 @@ class scHiCs:
         self.chromosomes, self.chromosome_lengths = get_chromosome_lengths(reference_genome, chromosomes, resolution)
         self.num_of_cells = len(list_of_files)
         self.sparse = sparse
+        self.downsample_depth = downsample_depth
         self.keep_n_strata = keep_n_strata
+        self.strata_offset = strata_offset
+        self.strata_downsample = strata_downsample
+        self.strata_n_depth = strata_n_depth
+        self.exclusive_strata = exclusive_strata
         self.contacts=np.array([0]*len(list_of_files))
-        self.short_range=np.array([0.0]*len(list_of_files))
-        self.mitotic=np.array([0.0]*len(list_of_files))
+        self.short_range=np.array([0]*len(list_of_files))
+        self.mitotic=np.array([0]*len(list_of_files))
         self.files=list_of_files
-        self.strata = {
-            ch: [np.zeros((self.num_of_cells, self.chromosome_lengths[ch] - i)) for i in range(keep_n_strata)]
-            for ch in self.chromosomes} if keep_n_strata else None
+        self.strata = None
+        if keep_n_strata:
+            if np.any(np.array([self.chromosome_lengths[ch] for ch in self.chromosomes]) <= keep_n_strata):
+                keep_n_strata = None
+                store_full_map = True
+            else:
+                self.strata = {
+                    ch: [np.zeros((self.num_of_cells, self.chromosome_lengths[ch] - i - self.strata_offset)) for i in range(keep_n_strata)]
+                    for ch in self.chromosomes}
+
         self.full_maps = None
+        self.store_full_map = store_full_map
         self.similarity_method=None
         self.distance=None
 
         assert keep_n_strata is not None or store_full_map is True
+        assert downsample_depth is None or strata_downsample is None
+        #assert downsample_depth is None or read_depths is not None  # if given downsample depth, we need to pass read depths of each cell
 
         if not store_full_map:
             self.full_maps = None
@@ -170,91 +147,104 @@ class scHiCs:
             self.full_maps = {
                 ch: np.zeros((self.num_of_cells, self.chromosome_lengths[ch], self.chromosome_lengths[ch]))
                 for ch in self.chromosomes}
-        
-        print('Loading HiC data...')
-        
-        if parallelize:
-            if mp is None:
-                raise ImportError('Need `multiprocessing` installed to parallelize data loading process.')
-            if n_processes is None:
-                n_processes=mp.cpu_count()-1
-            
-            
-            # print(n_processes)
-            
+        print('Preprocessing cells...', operations)
+        for idx, (file, depth) in tqdm(enumerate(zip(list_of_files, read_depths)), total=len(list_of_files)):
+            #print('Processing {0} out of {1} files: {2}'.format(idx+1,len(list_of_files),file))
+
+            if self.downsample_depth is not None:
+                downsample_percent = self.downsample_depth / depth
+
             for ch in self.chromosomes:
-                pool = mp.Pool(n_processes)
-                
-                results = [pool.apply(add_cell, args=(
-                    ch,idx, file, self.resolution, self.chromosome_lengths, 
-                    store_full_map, keep_n_strata, format, customized_format,
-                    header, adjust_resolution, map_filter, sparse, gzip,
-                    operations)
-                    ) for idx, file in enumerate(self.files)]
-                
+                if ('ch' in ch) and ('chr' not in ch):
+                    ch=ch.replace("ch", "chr")
+                mat, strata = load_HiC(
+                    file, genome_length=self.chromosome_lengths,
+                    format=format, custom_format=customized_format,
+                    header=header, chromosome=ch, resolution=resolution,
+                    resolution_adjust=adjust_resolution,
+                    map_filter=map_filter, sparse=sparse, gzip=gzip,
+                    strata_offset=self.strata_offset, strata_n_depth=self.strata_n_depth,
+                    keep_n_strata=keep_n_strata, operations=operations,
+                    **kwargs)
+
+                self.contacts[idx]+=np.sum(mat)/2+ np.trace(mat)/2
+
+                self.short_range[idx]+=sum([np.sum(mat[i,i:i+int(2000000/self.resolution)]) for i in range(len(mat))])
+                self.mitotic[idx]+=sum([np.sum(mat[i,i+int(2000000/self.resolution):i+int(12000000/self.resolution)]) for i in range(len(mat))])
+
+
+
                 if store_full_map:
-                    for idx in range(len(self.files)):
-                        self.full_maps[ch][idx]=results[idx].pop(4)
-                for idx in range(len(self.files)):
-                    strata=results[idx].pop(3)
-                    for strata_idx, stratum in enumerate(strata):
-                        self.strata[ch][strata_idx][idx, :]=stratum
-                
-                self.contacts+=[int(i[0]) for i in results]
-                self.short_range+=[i[1] for i in results]
-                self.mitotic+=[i[2] for i in results]
-                
-                pool.close()
-                
-                sys.stdout.write('\r')
-                sys.stdout.write("Process chromosome: {} ".format(ch))
-                sys.stdout.flush()
-        
-        else:
-            for idx, file in enumerate(self.files):
-                # print('Processing {0} out of {1} files: {2}'.format(idx+1,len(list_of_files),file))
-    
-                for ch in self.chromosomes:
-                    if ('ch' in ch) and ('chr' not in ch):
-                        ch=ch.replace("ch", "chr")
-                    mat, strata = load_HiC(
-                        file, genome_length=self.chromosome_lengths,
-                        format=format, custom_format=customized_format,
-                        header=header, chromosome=ch, resolution=resolution,
-                        resolution_adjust=adjust_resolution,
-                        map_filter=map_filter, sparse=sparse, gzip=gzip,
-                        keep_n_strata=keep_n_strata, operations=operations, sep=sep,
-                        **kwargs)
-                    
-                    self.contacts[idx]+=np.sum(mat)/2+ np.trace(mat)/2
-    # ??
-                    self.short_range[idx]+=sum([np.sum(mat[i,i:i+int(2000000/self.resolution)]) for i in range(len(mat))])
-                    self.mitotic[idx]+=sum([np.sum(mat[i,i+int(2000000/self.resolution):i+int(12000000/self.resolution)]) for i in range(len(mat))])
-    
-    
-    
-                    if store_full_map:
+                    if self.downsample_depth is not None:  # downsample all cells to uniform read depth
+                        if depth == 0:  # no reads, skip downsampling
+                            self.full_maps[ch][idx] = mat
+                        else:
+                            chr_depth = np.sum(mat)
+                            if chr_depth > 0:
+                                chr_downsample_depth = int(downsample_percent * chr_depth)
+                                flat_mat = np.squeeze(mat.ravel())
+                                p1 = flat_mat / chr_depth
+                                d1 = np.random.choice(np.arange(0, mat.size), size=chr_downsample_depth, replace=True, p=p1)
+                                #d2 = np.random.choice(np.arange(0, mat.shape[0]), size=chr_downsample_depth, replace=True, p=np.sum(p1, axis=0))
+                                new_mat = np.bincount(d1, minlength=mat.size)  # count each bin to compute new downsampled stratum
+                                #new_mat = np.zeros(mat.size)
+                                #for i in range(chr_downsample_depth):
+                                #    new_mat[d1[i]] += 1 #new_mat[d1[i], d2[i]] + 1
+                                new_mat = np.nan_to_num(new_mat)
+                                new_mat = np.reshape(new_mat, mat.shape)
+                                new_mat = new_mat + new_mat.T  # force symmetry
+                                self.full_maps[ch][idx] = new_mat
+                            else:
+                                self.full_maps[ch][idx] = mat
+                    else:
                         self.full_maps[ch][idx] = mat
-    
-                    if keep_n_strata:
-                        # self.strata[ch][idx] = strata
+
+                if keep_n_strata:
+                    # self.strata[ch][idx] = strata
+                    if self.downsample_depth is not None:
+                        chr_depth = 0
                         for strata_idx, stratum in enumerate(strata):
-                            self.strata[ch][strata_idx][idx, :] = stratum
-                
-                sys.stdout.write('\r')
-                sys.stdout.write("[%-50s] %d/%d \t" % ('='*int((idx+1)/len(self.files)*50), idx+1,len(self.files)))
-                #  File %s loaded  ,file
-                sys.stdout.flush()
-            
-                
-                
-                
+                            chr_depth += np.sum(stratum)
+                        for strata_idx, stratum in enumerate(strata):
+                            old_count = np.sum(stratum)
+                            if old_count == 0:
+                                self.strata[ch][strata_idx][idx, :] = stratum
+                                continue
+                            new_count = int(old_count * downsample_percent)
+                            probs = np.array(stratum) / old_count
+                            sampled_i = np.random.choice(np.arange(0, stratum.size), size=new_count, replace=True, p=probs)
+                            new_stratum = np.zeros_like(stratum)
+                            for i in sampled_i:
+                                new_stratum[i] += 1
+                            self.strata[ch][strata_idx][idx, :] = new_stratum
+
+                    else:
+                        for strata_idx, stratum in enumerate(strata):
+                            if self.strata_downsample is not None:
+                                if (strata_idx) in self.strata_downsample.keys():
+                                    downsample_percent = self.strata_downsample[strata_idx]
+                                    old_count = np.sum(stratum)
+                                    if old_count == 0:
+                                        self.strata[ch][strata_idx][idx, :] = stratum
+                                        continue
+                                    new_count = int(old_count * downsample_percent)
+                                    probs = np.array(stratum) / old_count
+                                    sampled_i = np.random.choice(np.arange(0, stratum.size), size=new_count, replace=True, p=probs)
+                                    new_stratum = np.zeros_like(stratum)
+                                    for i in sampled_i:
+                                        new_stratum[i] += 1
+                                    self.strata[ch][strata_idx][idx, :] = new_stratum
+                                else:
+                                    self.strata[ch][strata_idx][idx, :] = stratum
+                            else:
+                                self.strata[ch][strata_idx][idx, :] = stratum
+
     def cal_strata(self, n_strata):
         """
-        
+
         Alter the number of strata kept in a `scHiCs` object.
-        
-        
+
+
         Parameters
         ----------
         n_strata : int
@@ -266,10 +256,13 @@ class scHiCs:
             Strata of cells.
 
         """
-        
+
         if self.full_maps is None:
+            if self.exclusive_strata:
+                #print('Keeping exclusively %d strata' % self.keep_n_strata)
+                return deepcopy({ch: self.strata[ch][n_strata - 1:n_strata] for ch in self.chromosomes})
             if self.keep_n_strata <= n_strata:
-                print(' Only {0} strata are kept!'.format(self.keep_n_strata))
+                #print(' Only {0} strata are kept!'.format(self.keep_n_strata))
                 return deepcopy(self.strata)
             else:
                 return deepcopy({ch: self.strata[ch][:n_strata] for ch in self.chromosomes})
@@ -295,33 +288,33 @@ class scHiCs:
                         for i in range(self.keep_n_strata, n_strata):
                             self.strata[ch][i][idx, :] = np.diag(fmap[i:, :-i])
                 return deepcopy(self.strata)
-            
-            
+
+
 
     def processing(self, operations, **kwargs):
         """
-        
+
         Apply a smoothing method to contact maps.
         Requre the `scHiCs` object to store the full map of contacts maps.
-        
+
 
         Parameters
         ----------
         operations : str
             The methods use for smoothing the maps.
             Avaliable operations: 'convolution', 'random_walk', 'network_enhancing'.
-            
-        **kwargs : 
+
+        **kwargs :
             Other arguments specify smoothing methods passed to function.
             See function `scHiCTools.load.processing_utils.matrix_operation`.
-            
+
 
         Returns
         -------
         None.
 
         """
-        
+
         if self.full_maps is None:
             raise ValueError('No full maps stored. Processing is not doable.')
         if self.sparse:
@@ -341,35 +334,35 @@ class scHiCs:
 
 
 
-    def plot_contacts(self, hist=True, percent=True, 
+    def plot_contacts(self, hist=True, percent=True,
                       size=1.0, bins=10, color='#1f77b4'):
         """
-        
+
         Generate two plots:
-        Histogram of contacts and 
+        Histogram of contacts and
         scatter plot of short-range contacts v.s. contacts at the mitotic band.
-        
+
 
         Parameters
         ----------
         hist : bool, optional
-            Whether to plot Histogram of contacts. 
-            If `True`, plot Histogram of contacts. 
+            Whether to plot Histogram of contacts.
+            If `True`, plot Histogram of contacts.
             The default is True.
-            
+
         percent : int, optional
             Whether to plot scatter plot of short-range contacts v.s. contacts at the mitotic band.
             If `True`, plot scatter plot of short-range contacts v.s. contacts at the mitotic band.
             The default is True.
-            
+
         size : float, optional
             The point size of scatter plot.
             The default is 1.0.
-            
+
         bins : int, optional
             Number of bins in histogram.
             The default is 10.
-            
+
         color : str, optional
             The color of the plot.
             The default is '#1f77b4'.
@@ -400,33 +393,22 @@ class scHiCs:
 
 
 
-    def select_cells(self, n_contacts=[0,float("inf")],
-                     short_range=[0,1],
-                     mitotic=[0,1],
-                     selected=None):
+    def select_cells(self, min_n_contacts=0,max_short_range_contact=1):
         """
-        
+
         Select qualify cells based on minimum number of contacts and
         maxium percent of short range contact.
-        
+
 
         Parameters
         ----------
         min_n_contacts : int, optional
             The threshold of minimum number of contacts in each cell.
             The default is 0.
-            
-        short_range : list, optional
-            The threshold of minimum and maximum proportion of short range contact in every cell.
-            The default is [0,1].
-            
-        mitotic : list, optional
-            The threshold of minimum and maximum proportion of mitotic contact in every cell.
-            The default is [0,1].
-        
-        selected : list, optional
-            A list of cells to be selected. Elements in the list can be either bool or str.
-            The default is None.
+
+        max_short_range_contact : float, optional
+            The threshold of maximum proportion of short range contact in every cell.
+            The default is 1.
 
         Returns
         -------
@@ -434,71 +416,135 @@ class scHiCs:
             Selected files.
 
         """
-        
-        # files=np.array(self.files)
-        if selected is None:
-            selected=[True]*self.num_of_cells
-        
-        if np.all([type(i)==str for i in selected]):
-            selected=[True if i in selected else False for i in self.files]
-        elif not np.all([type(i)==bool for i in selected]):
-            raise ValueError("Elements of `selected` should be bool or str!")
-        elif len(selected)!=len(self.files):
-            raise ValueError("When elements of `selected` are bool, length of `selected` should be length of files({})!".format(len(self.files)))
-            
-        selected=np.all([selected,
-                         short_range[0] <= self.short_range/self.contacts,
-                         self.short_range/self.contacts <= short_range[1],
-                         n_contacts[0] <= self.contacts,
-                         self.contacts <= n_contacts[1],
-                         mitotic[0] <= self.mitotic/self.contacts,
-                         self.mitotic/self.contacts <= mitotic[1]
-                         ],axis=0)
+
+        files=np.array(self.files)
+        selected=np.logical_and(self.short_range/self.contacts<=max_short_range_contact,self.contacts>=min_n_contacts)
         self.num_of_cells=sum(selected)
-        self.files=[self.files[i] for i in  range(len(self.files)) if selected[i]]
+        self.files=[self.files[i] for i in  range(len(files)) if selected[i]]
         self.contacts=self.contacts[selected]
         self.short_range=self.short_range[selected]
         self.mitotic=self.mitotic[selected]
         if self.strata is not None:
             for ch in self.chromosomes:
-                for s in range(self.keep_n_strata):
-                    self.strata[ch][s]=self.strata[ch][s][selected,:]
+                self.strata[ch]=[self.strata[ch][i] for i in np.arange(len(selected))[selected]]
         if self.full_maps is not None:
             for ch in self.chromosomes:
                 self.full_maps[ch]=self.full_maps[ch][selected]
         if self.distance is not None:
             self.distance=self.distance[:,selected,:][:,:,selected]
-            
-        return self.files
+
+        return files[selected]
+
+
+    def graph_distance(self,dim=2,n_clusters=4,cutoff=0.8,n_PCs=10,**kwargs):
+        if self.full_maps is None:
+            raise ValueError('No full maps stored. scHiCluster is not doable.')
+
+        d = None
+        for ch in self.chromosomes:
+            cells = self.full_maps[ch].copy()
+            n_cells = cells.shape[0]
+            chr_d = np.zeros((n_cells, n_cells))
+            specs = {}
+            for i in range(n_cells):
+                for j in range(i, n_cells):
+                    if i in specs.keys():
+                        spec1 = specs[i]
+                    else:
+                        g1 = nx.from_numpy_matrix(cells[i])
+                        spec1 = nx.incidence_matrix(g1)
+                        spec1 = csr_matrix(spec1)
+                        specs[i] = spec1
+                    if j in specs.keys():
+                        spec2 = specs[j]
+                    else:
+                        g2 = nx.from_numpy_matrix(cells[j])
+                        spec2 = nx.incidence_matrix(g2)
+                        spec2 = csr_matrix(spec2)
+                        specs[i] = spec2
+                    chr_d[i][j] = scipy.sparse.linalg.norm(spec1 - spec2)
+                    chr_d[j][i] = chr_d[i][j]
+                print(i, '/', n_cells, chr_d[i][-1])
+            if d is None:
+                d = chr_d
+            else:
+                d += chr_d
+        d /= len(self.chromosomes)
+        mds = sklearn_MDS(n_PCs, dissimilarity='precomputed')
+        X = mds.fit_transform(d)
+
+        label=kmeans(X,n_clusters,kwargs.pop('weights',None),kwargs.pop('iteration',1000))
+
+        return X[:,:dim], label
+
+
+    def graph__lap_distance(self,dim=2,n_clusters=4,cutoff=0.8,n_PCs=10,**kwargs):
+        if self.full_maps is None:
+            raise ValueError('No full maps stored. scHiCluster is not doable.')
+
+        d = None
+        for ch in self.chromosomes:
+            cells = self.full_maps[ch].copy()
+            n_cells = cells.shape[0]
+            chr_d = np.zeros((n_cells, n_cells))
+            specs = {}
+            for i in range(n_cells):
+                print(i, '/', n_cells)
+                for j in range(i, n_cells):
+                    if i in specs.keys():
+                        spec1 = specs[i]
+                    else:
+                        spec1 = csgraph.laplacian(cells[i], normed=True)#nx.laplacian_spectrum(graph1)
+                        spec1 = csr_matrix(spec1)
+                        specs[i] = spec1
+                    if j in specs.keys():
+                        spec2 = specs[j]
+                    else:
+                        spec2 = csgraph.laplacian(cells[j], normed=True)#nx.laplacian_spectrum(graph1)
+                        spec2 = csr_matrix(spec2)
+                        specs[j] = spec2
+                    chr_d[i][j] = scipy.sparse.linalg.norm(spec1 - spec2)
+                    chr_d[j][i] = chr_d[i][j]
+            if d is None:
+                d = chr_d
+            else:
+                d += chr_d
+        d /= len(self.chromosomes)
+        mds = sklearn_MDS(n_PCs, dissimilarity='precomputed')
+        X = mds.fit_transform(d)
+
+        label=kmeans(X,n_clusters,kwargs.pop('weights',None),kwargs.pop('iteration',1000))
+
+        return X[:,:dim], label
 
 
 
     def scHiCluster(self,dim=2,n_clusters=4,cutoff=0.8,n_PCs=10,**kwargs):
 
         """
-        
+
         Embedding and clustering single cells using HiCluster.
-        Reference: 
-        Zhou J, Ma J, Chen Y, Cheng C, Bao B, Peng J, et al.
-        Robust single-cell Hi-C clustering by convolution- and random-walk–based imputation.
-        PNAS. 2019 Jul 9;116(28):14011–8. 
-        
-        
+        Reference:
+            Zhou J, Ma J, Chen Y, Cheng C, Bao B, Peng J, et al.
+            Robust single-cell Hi-C clustering by convolution- and random-walk–based imputation.
+            PNAS. 2019 Jul 9;116(28):14011–8.
+
+
         Parameters
         ----------
         dim : int, optional
             Number of dimension of embedding. The default is 2.
-            
+
         n_clusters : int, optional
             Number of clusters. The default is 4.
-            
+
         cutoff : float, optional
             The cutoff proportion to convert the real contact
             matrix into binary matrix. The default is 0.8.
-            
+
         n_PCs : int, optional
             Number of principal components. The default is 10.
-            
+
         **kwargs :
             Other arguments passed to kmeans.
             See `scHiCTools.analysis.clustering.kmeans` function.
@@ -507,25 +553,73 @@ class scHiCs:
         -------
         embeddings : numpy.ndarray
             The embedding of cells using HiCluster.
-            
+
         label : numpy.ndarray
             An array of cell labels clustered by HiCluster.
-            
+
         """
 
         if self.full_maps is None:
             raise ValueError('No full maps stored. scHiCluster is not doable.')
 
+        def kth_diag_indices(a, k):
+            rows, cols = np.diag_indices_from(a)
+            if k < 0:
+                return rows[-k:], cols[:k]
+            elif k > 0:
+                return rows[:-k], cols[k:]
+            else:
+                return rows, cols
+
+
         X=None
-        for ch in self.chromosomes:
-            sys.stdout.write('\r')
-            sys.stdout.write('HiCluster processing chromosome {}. '.format(ch))
-            # print('HiCluster processing chromosomes {}'.format(ch))
-            A=self.full_maps[ch].copy()
+        for ch in tqdm(self.chromosomes):
+            all_strata = self.full_maps[ch].copy()
+            if self.keep_n_strata is None:
+                #print('HiCluster processing chromosomes {}'.format(ch))
+                A = all_strata
+            elif self.keep_n_strata >= all_strata.shape[-1]:
+                #print('HiCluster processing chromosomes (no strata to filter) {}'.format(ch))
+                A = all_strata
+            else:
+                #print('HiCluster processing chromosomes and filtering strata {}'.format(ch))
+                A = np.zeros_like(all_strata)
+                for cell_i in range(A.shape[0]):
+                    cell_A = all_strata[cell_i]
+                    for k in range(self.strata_offset, self.keep_n_strata):
+                        #k += self.strata_offset
+                        strata_rows, strata_cols = kth_diag_indices(cell_A, k)
+                        s = np.diag(cell_A, k=k)
+                        if self.strata_downsample is not None:
+                            if k in self.strata_downsample.keys():
+                                downsample_percent = self.strata_downsample[k]
+                                old_count = np.sum(s)
+                                if old_count == 0:
+                                    continue
+                                new_count = int(old_count * downsample_percent)
+                                probs = np.array(s) / old_count
+                                if np.any(np.isnan(probs)):
+                                    A[cell_i, strata_rows, strata_cols] = s
+                                    A[cell_i, strata_cols, strata_rows] = s
+                                else:
+                                    sampled_i = np.random.choice(np.arange(0, s.size), size=new_count, replace=True, p=probs)
+                                    new_stratum = np.zeros_like(s)
+                                    for i in sampled_i:
+                                        new_stratum[i] += 1
+                                    A[cell_i, strata_rows, strata_cols] = new_stratum
+                                    A[cell_i, strata_cols, strata_rows] = new_stratum
+                            else:
+                                A[cell_i, strata_rows, strata_cols] = s
+                                A[cell_i, strata_cols, strata_rows] = s
+                        else:
+                            A[cell_i, strata_rows, strata_cols] = s
+                            A[cell_i, strata_cols, strata_rows] = s
+
             if len(A.shape)==3:
                 n=A.shape[1]*A.shape[2]
                 A.shape=(A.shape[0],n)
             A=np.quantile(A,cutoff,axis=1)<np.transpose(A)
+            #A = (A - np.mean(A, axis=1)) / np.std(A, axis=1)  # standardize inputs
             A = PCA(A.T,n_PCs)
             if X is None:
                 X=A
@@ -533,7 +627,12 @@ class scHiCs:
                 X=np.append(X, A, axis=1)
 
         X=PCA(X,n_PCs)
-        label=kmeans(X,n_clusters,kwargs.pop('weights',None),kwargs.pop('iteration',1000))
+        X = np.nan_to_num(X)
+        try:
+            label=kmeans(X,n_clusters,kwargs.pop('weights',None),kwargs.pop('iteration',1000))
+        except ValueError:
+            print('NaN probabilities found when running K-means...')
+            label = np.zeros(X.shape[0])
 
         return X[:,:dim], label
 
@@ -543,95 +642,98 @@ class scHiCs:
 
 
     def learn_embedding(self, similarity_method, embedding_method,
-                        dim=2, aggregation='median', n_strata=None, return_distance=False,
-                        print_time=False, parallelize=False, n_processes=1,
+                        dim=2, aggregation='median', n_strata=None, return_distance=False, print_time=False, distance_matrix_viz=None, row_colors=None,
                         **kwargs):
         """
-        
+
         Function to find a low-dimensional embedding for cells.
-        
+
 
         Parameters
         ----------
         similarity_method : str
             The method used to calculate similarity matrix.
             Now support 'inner_product', 'HiCRep' and 'Selfish'.
-            
+
         embedding_method : str
             The method used to project cells into lower-dimensional space.
             Now support 'MDS', 'tSNE', 'phate', 'spectral_embedding'.
-            
+
         dim : int, optional
             Dimension of the embedding space.
             The default is 2.
-            
+
         aggregation : str, optional
             Method to find the distance matrix based on distance matrices of chromesomes.
             Must be 'mean' or 'median'.
             The default is 'median'.
-            
+
         n_strata : int, optional
             Number of strata used in calculation.
             The default is None.
-            
+
         return_distance : bool, optional
             Whether to return the distance matrix of cells.
             If True, return (embeddings, distance_matrix);
-            if False, only return embeddings. 
+            if False, only return embeddings.
             The default is False.
-            
+
         print_time : bool, optional
             Whether to print process time. The default is False.
-            
+
         **kwargs :
             Including two arguments for Selfish
             (see funciton `pairwise_distances`):\
             `n_windows`: number of Selfish windows\
             `sigma`: sigma in the Gaussian-like kernel\
-            and some arguments specify different embedding method 
+            and some arguments specify different embedding method
             (see functions in `scHiCTools.embedding.embedding`).
-            
+
 
         Returns
         -------
         embeddings: numpy.ndarray
             The embedding of cells in lower-dimensional space.
-        
+
         final_distance: numpy.ndarray, optional
             The pairwise distance calculated.
-        
+
         """
-        
+
         if self.distance is None or self.similarity_method!=similarity_method:
             self.similarity_method=similarity_method
             distance_matrices = []
             assert embedding_method.lower() in ['mds', 'tsne', 'umap', 'phate', 'spectral_embedding']
-            assert n_strata is not None or self.keep_n_strata is not None
-            n_strata = n_strata if n_strata is not None else self.keep_n_strata
-            new_strata = self.cal_strata(n_strata)
+
+            if not self.store_full_map:
+                assert n_strata is not None or self.keep_n_strata is not None
+                n_strata = n_strata if n_strata is not None else self.keep_n_strata
+                new_strata = self.cal_strata(n_strata)
+                #print('Strata only')
+            else:
+                #print('Full map')
+                n_strata = n_strata if n_strata is not None else self.keep_n_strata
+                new_strata = self.cal_strata(n_strata)
+                #new_strata = self.strata=
             if print_time:
                 time1=0
                 time2=0
-                for ch in self.chromosomes:
-                    print(ch)
-                    distance_mat,t1,t2 = pairwise_distances(new_strata[ch], similarity_method, print_time, kwargs.get('sigma',.5), kwargs.get('window_size',10),parallelize, n_processes)
+                for ch in tqdm(self.chromosomes):
+                    distance_mat,t1,t2 = pairwise_distances(new_strata[ch], similarity_method, print_time, kwargs.get('sigma',.5), kwargs.get('window_size',10))
                     time1=time1+t1
                     time2=time2+t2
                     distance_matrices.append(distance_mat)
                 print('Sum of time 1:', time1)
                 print('Sum of time 2:', time2)
             else:
-                for i,ch in enumerate(self.chromosomes):
-                    # print(ch)
-                    distance_mat = pairwise_distances(new_strata[ch],
-                                   similarity_method,
-                                   print_time,
-                                   kwargs.get('sigma',.5),
-                                   kwargs.get('window_size',10))
-                    distance_matrices.append(distance_mat)
-                    sys.stdout.write('\r')
-                    sys.stdout.write("[%-30s] %d/%d \t Calculating chromosome %s. " % ('='*int((i+1)/len(self.chromosomes)*30),i+1,len(self.chromosomes),ch))
-                
+                for ch in tqdm(self.chromosomes):
+                    if ch is not None and new_strata is not None:
+                        distance_mat = pairwise_distances(new_strata[ch],
+                                       similarity_method,
+                                       print_time,
+                                       kwargs.get('sigma',.5),
+                                       kwargs.get('window_size',10))
+                        distance_matrices.append(distance_mat)
             self.distance = np.array(distance_matrices)
 
         if aggregation == 'mean':
@@ -640,21 +742,31 @@ class scHiCs:
             final_distance = np.median(self.distance, axis=0)
         else:
             raise ValueError('Aggregation method {0} not supported. Only "mean" or "median".'.format(aggregation))
-
         np.fill_diagonal(final_distance, 0)
+
+        if distance_matrix_viz is not None:
+            im = plt.matshow(final_distance, cmap='Blues')
+            plt.colorbar(im)
+            plt.savefig(distance_matrix_viz + '.png')
+            plt.close()
+            lk = linkage(final_distance, method='average')
+            sns.clustermap(final_distance, row_linkage=lk, col_linkage=lk, row_colors=row_colors)
+            plt.savefig(distance_matrix_viz + '_cluster.png')
+            plt.close()
+
 
         embedding_method = embedding_method.lower()
         if embedding_method == 'mds':
             embeddings = MDS(final_distance, dim)
         elif embedding_method == 'tsne':
-            embeddings = tSNE(final_distance, dim, 
+            embeddings = tSNE(final_distance, dim,
                               kwargs.pop('perp',30),
                               kwargs.pop('iteration',1000),
                               kwargs.pop('momentum', 0.5),
                               kwargs.pop('rate', 200),
                               kwargs.pop('tol',1e-5))
         # elif embedding_method == 'umap':
-        #     embeddings = UMAP(final_distance, dim, 
+        #     embeddings = UMAP(final_distance, dim,
         #                       kwargs.pop('n',5),
         #                       kwargs.pop('min_dist',1),
         #                       kwargs.pop('n_epochs',10),
@@ -662,7 +774,7 @@ class scHiCs:
         #                       kwargs.pop('n_neg_samples',0))
         elif embedding_method == 'phate':
             embeddings = PHATE(final_distance, dim,
-                               kwargs.pop('k',5), 
+                               kwargs.pop('k',5),
                                kwargs.pop('a',1),
                                kwargs.pop('gamma',1),
                                kwargs.pop('t_max',100),
@@ -674,7 +786,7 @@ class scHiCs:
             embeddings = SpectralEmbedding(graph, dim)
         else:
             raise ValueError('Embedding method {0} not supported. '.format(embedding_method))
-            
+
         if return_distance:
             return embeddings, final_distance
         else:
@@ -690,32 +802,32 @@ class scHiCs:
                    print_time=False,
                    **kwargs):
         """
-        
+
         Parameters
         ----------
         n_clusters : int
             Number of clusters.
-            
+
         clustering_method : str
             Clustering method in 'kmeans', 'spectral_clustering' or 'HAC'(hierarchical agglomerative clustering).
-            
+
         similarity_method : str
             Reproducibility measure.
             Value in ‘InnerProduct’, ‘HiCRep’ or ‘Selfish’.
-            
+
         aggregation : str, optional
              Method to aggregate different chromosomes.
              Value is either 'mean' or 'median'.
              The default is 'median'.
-             
+
         n_strata : int or None, optional
             Only consider contacts within this genomic distance.
             If it is None, it will use the all strata kept from previous loading process.
             The default is None.
-            
+
         print_time : bool, optional
             Whether to print the processing time. The default is False.
-            
+
         **kwargs :
             Other arguments pass to function `scHiCTools.embedding.reproducibility.pairwise_distances `,
             and the clustering function in `scHiCTools.analysis.clustering`.
@@ -725,7 +837,7 @@ class scHiCs:
         -------
         label : numpy.ndarray
             An array of cell labels clustered.
-            
+
         """
         if self.distance is None or self.similarity_method!=similarity_method:
             self.similarity_method=similarity_method
@@ -734,16 +846,13 @@ class scHiCs:
             n_strata = n_strata if n_strata is not None else self.keep_n_strata
             new_strata = self.cal_strata(n_strata)
 
-            for i,ch in enumerate(self.chromosomes):
-                # print(ch)
+            for ch in tqdm(self.chromosomes):
                 distance_mat = pairwise_distances(new_strata[ch],
                                               similarity_method,
                                               print_time,
                                               kwargs.get('sigma',.5),
                                               kwargs.get('window_size',10))
                 distance_matrices.append(distance_mat)
-                sys.stdout.write('\r')
-                sys.stdout.write("[%-30s] %d/%d \t Calculating chromosome %s. " % ('='*int((i+1)/len(self.chromosomes)*30), i+1, len(self.chromosomes), ch))
             self.distance = np.array(distance_matrices)
 
         if aggregation == 'mean':
@@ -754,7 +863,7 @@ class scHiCs:
             raise ValueError('Aggregation method {0} not supported. Only "mean" or "median".'.format(aggregation))
 
         np.fill_diagonal(final_distance, 0)
-        
+
         clustering_method=clustering_method.lower()
         if clustering_method=='kmeans':
             embeddings = MDS(final_distance, n_clusters)

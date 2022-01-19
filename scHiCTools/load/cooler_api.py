@@ -183,17 +183,17 @@ def parse_humanized(s):
     if not len(unit):
         return int(value)
 
-    value = float(value)
+    new_value = float(value)
     unit = unit.upper().strip()
     if unit in ("K", "KB"):
-        value *= 1000
+        new_value *= 1000
     elif unit in ("M", "MB"):
-        value *= 1000000
+        new_value *= 1000000
     elif unit in ("G", "GB"):
-        value *= 1000000000
+        new_value *= 1000000000
     else:
         raise ValueError("Unknown unit '{}'".format(unit))
-    return int(value)
+    return int(new_value)
 
 
 def parse_region_string(s):
@@ -217,8 +217,8 @@ def parse_region_string(s):
             ("OTHER", r".+"),
         ]
         tok_regex = r"\s*" + r"|\s*".join(r"(?P<%s>%s)" % pair for pair in token_spec)
-        tok_regex = re.compile(tok_regex, re.IGNORECASE)
-        for match in tok_regex.finditer(s):
+        tok_regex_re = re.compile(tok_regex, re.IGNORECASE)
+        for match in tok_regex_re.finditer(s):
             typ = match.lastgroup
             yield typ, match.group(typ)
 

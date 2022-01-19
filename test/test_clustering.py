@@ -13,7 +13,7 @@ from scHiCTools import kmeans, spectral_clustering, HAC
 
 
 center=np.array([[0,0],[100,100],[-100,100]])
-rand_data = np.random.normal(size=(90,2)) + np.repeat(center, 30, axis=0)
+rand_data: np.ndarray = np.random.normal(size=(90,2)) + np.repeat(center, 30, axis=0)
 
 def test_kmeans():
     label=kmeans(rand_data, k=3)

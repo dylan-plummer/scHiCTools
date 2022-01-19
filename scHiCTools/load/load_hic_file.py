@@ -24,7 +24,7 @@ def get_chromosome_lengths(ref, chromosomes, res=1):
         chromosomes (str): 'All', 'except X', 'except Y' or a list of chromosomes like ['chr1', 'chr2']
 
     Returns:
-        chromosomes (set): 
+        chromosomes (set):
         lengths (dict): eg. {'chr1': 395, 'chr2': 390, ...}
     """
     def _res_change(length, res):
@@ -50,41 +50,49 @@ def get_chromosome_lengths(ref, chromosomes, res=1):
     else:
         raise ValueError('Unsupported reference genome!')
 
-    if chromosomes in ['all', 'All']:
+    try:
+        if chromosomes in ['all', 'All']:
+            pass
+        elif chromosomes == 'except X':
+            del lengths['chrX']
+        elif chromosomes == 'except Y':
+            del lengths['chrY']
+        elif chromosomes == 'except M':
+            del lengths['chrM']
+        elif chromosomes == 'except XY':
+            del lengths['chrX']
+            del lengths['chrY']
+        elif chromosomes == 'except YM' or chromosomes == 'except MY':
+            del lengths['chrM']
+            del lengths['chrY']
+        elif type(chromosomes) == list:
+            lengths = {elm: lengths[elm] for elm in chromosomes}
+    except KeyError:
         pass
-    elif chromosomes == 'except X':
-        del lengths['chrX']
-    elif chromosomes == 'except Y':
-        del lengths['chrY']
-    elif chromosomes == 'except XY':
-        del lengths['chrX']
-        del lengths['chrY']
-    elif type(chromosomes) == list:
-        lengths = {elm: lengths[elm] for elm in chromosomes}
 
     chromosomes = set(lengths.keys())
     return chromosomes, lengths
 
 
 def file_line_generator(file, format=None, chrom=None, header=0, resolution=1,
-                        resolution_adjust=True, mapping_filter=0., gzip=False, sep=' '):
+                        resolution_adjust=True, mapping_filter=0., gzip=False):
     """
     For formats other than .hic and .mcool
 
     Args:
         file (str): File path.
-        
-        format (int or list): Format 
+
+        format (int or list): Format
             1) [chr1 pos1 chr2 pos2 mapq1 mapq2];
             2) [chr1 pos1 chr2 pos2 score];
             3) [chr1 pos1 chr2 pos2].
-    
+
         chrom (str): Chromosome to extract.
-        
+
         header (None or int): Whether to skip header (1 line).
-    
+
         mapping_filter (float): The threshold to filter some reads by map quality.
-        
+
 
     Returns:
         No return value.
@@ -96,7 +104,7 @@ def file_line_generator(file, format=None, chrom=None, header=0, resolution=1,
         for _ in range(header):
             next(f)
     for line in f:
-        lst = line.strip().split(sep)
+        lst = line.strip().split()
         if len(format) not in [4, 5, 6]:
             raise ValueError('Wrong custom format!')
 
@@ -108,7 +116,7 @@ def file_line_generator(file, format=None, chrom=None, header=0, resolution=1,
 
         if len(format) == 6:  # [chr1 pos1 chr2 pos2 mapq1 mapq2]
             # mapq1 mapq2
-            q1, q2 = float(lst[format[4]-1]), float(lst[format[5]-1])
+            q1, q2 = float(lst[format[4]-1]), float(lst[format[4]-1])
             if q1 < mapping_filter or q2 < mapping_filter:
                 continue
 
@@ -129,10 +137,10 @@ def file_line_generator(file, format=None, chrom=None, header=0, resolution=1,
     f.close()
 
 
-def load_HiC(file, genome_length, format=None, custom_format=None, 
+def load_HiC(file, genome_length, format=None, custom_format=None,
              header=0, chromosome=None, resolution=10000,
-             resolution_adjust=True, map_filter=0., sparse=False, gzip=False,
-             keep_n_strata=False, operations=None, sep=' ', **kwargs):
+             resolution_adjust=True, map_filter=0., sparse=False, gzip=False, strata_offset=0, strata_n_depth=None,
+             keep_n_strata=False, operations=None, **kwargs):
     """
     Load HiC contact map into a matrix
     Args:
@@ -181,43 +189,43 @@ def load_HiC(file, genome_length, format=None, custom_format=None,
         # text files
         elif format == 'shortest':
             gen = file_line_generator(
-                file, format=[1, 2, 3, 4], chrom=chromosome, header=header, gzip=gzip,
-                resolution=resolution, resolution_adjust=resolution_adjust, mapping_filter=0, sep=sep
+                file, format=[1, 2, 3, 4], chrom=chromosome, header=0, gzip=gzip,
+                resolution=resolution, resolution_adjust=resolution_adjust, mapping_filter=0
             )
         elif format == 'shortest_score':
             gen = file_line_generator(
-                file, format=[1, 2, 3, 4, 5], chrom=chromosome, header=header, gzip=gzip,
-                resolution=resolution, resolution_adjust=resolution_adjust, mapping_filter=0,sep=sep
+                file, format=[1, 2, 3, 4, 5], chrom=chromosome, header=0, gzip=gzip,
+                resolution=resolution, resolution_adjust=resolution_adjust, mapping_filter=0
             )
         elif format == 'short':
             gen = file_line_generator(
-                file, format=[2, 3, 6, 7], chrom=chromosome, header=header, gzip=gzip,
-                resolution=resolution, resolution_adjust=resolution_adjust, mapping_filter=0,sep=sep
+                file, format=[2, 3, 6, 7], chrom=chromosome, header=0, gzip=gzip,
+                resolution=resolution, resolution_adjust=resolution_adjust, mapping_filter=0
             )
         elif format == 'short_score':
             gen = file_line_generator(
-                file, format=[2, 3, 6, 7, 9], chrom=chromosome, header=header, gzip=gzip,
-                resolution=resolution, resolution_adjust=resolution_adjust, mapping_filter=0,sep=sep
+                file, format=[2, 3, 6, 7, 9], chrom=chromosome, header=0, gzip=gzip,
+                resolution=resolution, resolution_adjust=resolution_adjust, mapping_filter=0
             )
         elif format == 'medium':
             gen = file_line_generator(
-                file, format=[3, 4, 7, 8, 10, 11], chrom=chromosome, 
-                header=header, gzip=gzip, resolution=resolution,
+                file, format=[3, 4, 7, 8, 10, 11], chrom=chromosome,
+                header=0, gzip=gzip, resolution=resolution,
                 resolution_adjust=resolution_adjust,
-                mapping_filter=map_filter,sep=sep
+                mapping_filter=map_filter
             )
         elif format == 'long':
             gen = file_line_generator(
-                file, format=[2, 3, 6, 7, 9, 12], chrom=chromosome, header=header,
+                file, format=[2, 3, 6, 7, 9, 12], chrom=chromosome, header=0,
                 gzip=gzip, resolution=resolution,
                 resolution_adjust=resolution_adjust,
-                mapping_filter=map_filter, sep=sep
+                mapping_filter=map_filter
             )
         elif format == '4dn':
             gen = file_line_generator(
                 file, format=[2, 3, 4, 5], chrom=chromosome, header=2,
                 gzip=gzip, resolution=resolution,
-                resolution_adjust=resolution_adjust, mapping_filter=0, sep=sep
+                resolution_adjust=resolution_adjust, mapping_filter=0
             )
         elif format is None or format == 'customized':
             if custom_format is None:
@@ -229,41 +237,54 @@ def load_HiC(file, genome_length, format=None, custom_format=None,
                     file, format=custom_format, header=header,
                     chrom=chromosome, gzip=gzip, resolution=resolution,
                     resolution_adjust=resolution_adjust,
-                    mapping_filter=map_filter, sep=sep
+                    mapping_filter=map_filter
                 )
         else:
             raise ValueError('Unrecognized format: ' + format)
 
         mat = np.zeros((size, size))
         count = 0
-        lst=[]
         for p1, p2, val in gen:
-            if count==0:
-                p1_m=p1
-                p2_m=p2
-            else:
-                if p1<p1_m:
-                    p1_m=p1#?
-                if p2<p2_m:
-                    p2_m=p2#?
-            count+=1
-            lst.append((p1,p2,val))
-            
-        for p1, p2, val in lst:
+            if count==0: #?
+                p1_m=p1#?
+                p2_m=p2#?
+            count += 1
             p1-=p1_m#?
             p2-=p2_m#?
+            if count % 100000 == 0:
+                print('Line: ', count)
             # print(chromosome, p1, p2, val)
             mat[p1, p2] += val
             if p1 != p2:
                 mat[p2, p1] += val
-        
+
+
+    #depth = int(np.sum(np.diag(mat[strata_n_depth:, :len(mat) - strata_n_depth])))
+    if strata_n_depth is not None:
+        depth = 0
+        for i in range(strata_n_depth):
+            depth += int(np.sum(np.diag(mat, k=i)))
+        depth = int(np.sum(mat) - depth)  # remaining reads
+        #print('%d strata downsample depth: %d' % (strata_n_depth, depth))
+
+
     if operations is not None:
         mat = matrix_operation(mat, operations, **kwargs)
 
     if keep_n_strata:
-        strata = [np.diag(mat[i:, :len(mat)-i]) for i in range(keep_n_strata)]
+        strata = [np.diag(mat[i:, :len(mat)-i]) for i in range(strata_offset, keep_n_strata + strata_offset)]
+        if strata_n_depth is not None:
+            if depth > 0:
+                for i in range(keep_n_strata):
+                    reads = np.sum(strata[i])
+                    if reads > 0:
+                        p1 = strata[i] / reads
+                        d1 = np.random.choice(np.arange(0, strata[i].size), size=depth, replace=True, p=p1)
+                        #d2 = np.random.choice(np.arange(0, mat.shape[0]), size=chr_downsample_depth, replace=True, p=np.sum(p1, axis=0))
+                        new_mat = np.bincount(d1, minlength=strata[i].size)  # count each bin to compute new downsampled stratum
+                        strata[i] = new_mat
     else:
-        strata = None
+        strata = [np.diag(mat[i:, :len(mat)-i]) for i in range(strata_offset, size)]
 
     if sparse:
         mat = coo_matrix(mat)
