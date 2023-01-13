@@ -16,12 +16,13 @@ from scipy.sparse import csgraph
 import scipy.spatial.distance as dis
 from scipy.optimize import curve_fit
 from scipy.spatial.distance import squareform
+from sklearn.decomposition import PCA as sklearn_PCA
 
 
 
 # PCA :---------------------------------------------------
 
-def PCA(X, dim=2):
+def PCA(X, dim=2, val_X=None):
     """
     
     Principal components analysis，PCA.
@@ -44,9 +45,15 @@ def PCA(X, dim=2):
 
     """
     
-    X=X-np.mean(X,axis=0)
-    U, S, V = np.linalg.svd(X, full_matrices=False, compute_uv=True)
-    Y = np.dot(V[:dim,:],X.T).T
+    # X=X-np.mean(X,axis=0)
+    # U, S, V = np.linalg.svd(X, full_matrices=False, compute_uv=True)
+    if val_X is None:
+        # Y = np.dot(V[:dim,:],X.T).T
+        Y = sklearn_PCA(dim).fit_transform(X.reshape((len(X), -1)))
+    else:
+        #Y = np.dot(V[:dim,:],val_X.T).T
+        pca = sklearn_PCA(dim).fit(X.reshape((len(X), -1)))
+        Y = pca.transform(val_X.reshape((len(val_X), -1)))
     return(Y)
     
 

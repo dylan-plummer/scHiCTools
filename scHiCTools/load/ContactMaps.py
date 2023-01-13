@@ -10,7 +10,7 @@ from scipy.sparse import coo_matrix, csgraph, csr_matrix
 from sklearn.decomposition import NMF
 from sklearn.manifold import MDS as sklearn_MDS
 from .load_hic_file import get_chromosome_lengths, load_HiC
-from ..embedding import pairwise_distances, MDS, tSNE, PHATE, SpectralEmbedding, PCA
+from ..embedding import pairwise_distances, MDS, nMDS, tSNE, PHATE, SpectralEmbedding, PCA
 from .processing_utils import matrix_operation
 # from ..analysis import scatter
 from ..analysis import kmeans, spectral_clustering, HAC
@@ -148,11 +148,8 @@ class scHiCs:
                 ch: np.zeros((self.num_of_cells, self.chromosome_lengths[ch], self.chromosome_lengths[ch]))
                 for ch in self.chromosomes}
         print('Preprocessing cells...', operations)
-        for idx, (file, depth) in tqdm(enumerate(zip(list_of_files, read_depths)), total=len(list_of_files)):
+        for idx, file in tqdm(enumerate(list_of_files), total=len(list_of_files)):
             #print('Processing {0} out of {1} files: {2}'.format(idx+1,len(list_of_files),file))
-
-            if self.downsample_depth is not None:
-                downsample_percent = self.downsample_depth / depth
 
             for ch in self.chromosomes:
                 if ('ch' in ch) and ('chr' not in ch):
@@ -166,7 +163,7 @@ class scHiCs:
                     strata_offset=self.strata_offset, strata_n_depth=self.strata_n_depth,
                     keep_n_strata=keep_n_strata, operations=operations,
                     **kwargs)
-
+                mat = np.nan_to_num(mat)
                 self.contacts[idx]+=np.sum(mat)/2+ np.trace(mat)/2
 
                 self.short_range[idx]+=sum([np.sum(mat[i,i:i+int(2000000/self.resolution)]) for i in range(len(mat))])
@@ -175,69 +172,11 @@ class scHiCs:
 
 
                 if store_full_map:
-                    if self.downsample_depth is not None:  # downsample all cells to uniform read depth
-                        if depth == 0:  # no reads, skip downsampling
-                            self.full_maps[ch][idx] = mat
-                        else:
-                            chr_depth = np.sum(mat)
-                            if chr_depth > 0:
-                                chr_downsample_depth = int(downsample_percent * chr_depth)
-                                flat_mat = np.squeeze(mat.ravel())
-                                p1 = flat_mat / chr_depth
-                                d1 = np.random.choice(np.arange(0, mat.size), size=chr_downsample_depth, replace=True, p=p1)
-                                #d2 = np.random.choice(np.arange(0, mat.shape[0]), size=chr_downsample_depth, replace=True, p=np.sum(p1, axis=0))
-                                new_mat = np.bincount(d1, minlength=mat.size)  # count each bin to compute new downsampled stratum
-                                #new_mat = np.zeros(mat.size)
-                                #for i in range(chr_downsample_depth):
-                                #    new_mat[d1[i]] += 1 #new_mat[d1[i], d2[i]] + 1
-                                new_mat = np.nan_to_num(new_mat)
-                                new_mat = np.reshape(new_mat, mat.shape)
-                                new_mat = new_mat + new_mat.T  # force symmetry
-                                self.full_maps[ch][idx] = new_mat
-                            else:
-                                self.full_maps[ch][idx] = mat
-                    else:
-                        self.full_maps[ch][idx] = mat
+                    self.full_maps[ch][idx] = mat
 
                 if keep_n_strata:
-                    # self.strata[ch][idx] = strata
-                    if self.downsample_depth is not None:
-                        chr_depth = 0
-                        for strata_idx, stratum in enumerate(strata):
-                            chr_depth += np.sum(stratum)
-                        for strata_idx, stratum in enumerate(strata):
-                            old_count = np.sum(stratum)
-                            if old_count == 0:
-                                self.strata[ch][strata_idx][idx, :] = stratum
-                                continue
-                            new_count = int(old_count * downsample_percent)
-                            probs = np.array(stratum) / old_count
-                            sampled_i = np.random.choice(np.arange(0, stratum.size), size=new_count, replace=True, p=probs)
-                            new_stratum = np.zeros_like(stratum)
-                            for i in sampled_i:
-                                new_stratum[i] += 1
-                            self.strata[ch][strata_idx][idx, :] = new_stratum
-
-                    else:
-                        for strata_idx, stratum in enumerate(strata):
-                            if self.strata_downsample is not None:
-                                if (strata_idx) in self.strata_downsample.keys():
-                                    downsample_percent = self.strata_downsample[strata_idx]
-                                    old_count = np.sum(stratum)
-                                    if old_count == 0:
-                                        self.strata[ch][strata_idx][idx, :] = stratum
-                                        continue
-                                    new_count = int(old_count * downsample_percent)
-                                    probs = np.array(stratum) / old_count
-                                    sampled_i = np.random.choice(np.arange(0, stratum.size), size=new_count, replace=True, p=probs)
-                                    new_stratum = np.zeros_like(stratum)
-                                    for i in sampled_i:
-                                        new_stratum[i] += 1
-                                    self.strata[ch][strata_idx][idx, :] = new_stratum
-                                else:
-                                    self.strata[ch][strata_idx][idx, :] = stratum
-                            else:
-                                self.strata[ch][strata_idx][idx, :] = stratum
+                    for strata_idx, stratum in enumerate(strata):
+                        self.strata[ch][strata_idx][idx, :] = stratum
 
     def cal_strata(self, n_strata):
         """
@@ -519,7 +458,7 @@ class scHiCs:
 
 
 
-    def scHiCluster(self,dim=2,n_clusters=4,cutoff=0.8,n_PCs=10,**kwargs):
+    def scHiCluster(self,dim=2,n_clusters=4,cutoff=0.8,n_PCs=10,val_data=None,**kwargs):
 
         """
 
@@ -571,11 +510,9 @@ class scHiCs:
             else:
                 return rows, cols
 
-
-        X=None
-        for ch in tqdm(self.chromosomes):
-            all_strata = self.full_maps[ch].copy()
-            if self.keep_n_strata is None:
+        def get_chr_mats(ch, full_maps):
+            all_strata = full_maps[ch].copy()
+            if self.keep_n_strata is None or self.store_full_map:
                 #print('HiCluster processing chromosomes {}'.format(ch))
                 A = all_strata
             elif self.keep_n_strata >= all_strata.shape[-1]:
@@ -614,35 +551,85 @@ class scHiCs:
                         else:
                             A[cell_i, strata_rows, strata_cols] = s
                             A[cell_i, strata_cols, strata_rows] = s
+            return A
+
+        def chr_pc(ch):
+            A = get_chr_mats(ch, self.full_maps)
 
             if len(A.shape)==3:
                 n=A.shape[1]*A.shape[2]
                 A.shape=(A.shape[0],n)
-            A=np.quantile(A,cutoff,axis=1)<np.transpose(A)
+            q_vals = np.quantile(A,cutoff,axis=1)
+            A=q_vals<np.transpose(A)
             #A = (A - np.mean(A, axis=1)) / np.std(A, axis=1)  # standardize inputs
+            val_A = None
+            if val_data is not None:
+                val_A = get_chr_mats(ch, val_data.full_maps)
+                if len(val_A.shape)==3:
+                    n=val_A.shape[1]*val_A.shape[2]
+                    val_A.shape=(val_A.shape[0],n)
+                val_A=np.quantile(val_A,cutoff,axis=1)<np.transpose(val_A)
+                # print('Validation shape:', val_A.shape)
+                # print('Train shape:', A.shape)
+                val_A = PCA(A.T,n_PCs, val_X=val_A.T)
             A = PCA(A.T,n_PCs)
-            if X is None:
-                X=A
-            else:
-                X=np.append(X, A, axis=1)
+            return A, val_A
 
-        X=PCA(X,n_PCs)
+        X=[]
+        val_X=[]
+        for ch in tqdm(self.chromosomes):
+            A, val_A = chr_pc(ch)
+            X.append(A)
+            if val_data is not None:
+                val_X.append(val_A)
+        X = np.concatenate(X, axis=1)
+        if val_data is not None:
+            val_X = np.concatenate(val_X, axis=1)
+        else:
+            val_X = None
+        
+        X=PCA(X,n_PCs, val_X=val_X)
         X = np.nan_to_num(X)
         try:
             label=kmeans(X,n_clusters,kwargs.pop('weights',None),kwargs.pop('iteration',1000))
-        except ValueError:
+        except ValueError as e:
+            print(e)
             print('NaN probabilities found when running K-means...')
             label = np.zeros(X.shape[0])
 
         return X[:,:dim], label
 
 
+    def get_distance(self, val_data=None, **kwargs):
+        
+        distance_matrices = []
+        
+        n_strata = kwargs.get('n_strata', None)
+        if not self.store_full_map:
+            assert n_strata is not None or self.keep_n_strata is not None
+            n_strata = n_strata if n_strata is not None else self.keep_n_strata
+            new_strata = self.cal_strata(n_strata)
+            #print('Strata only')
+        else:
+            #print('Full map')
+            n_strata = n_strata if n_strata is not None else self.keep_n_strata
+            new_strata = self.cal_strata(n_strata)
+            #new_strata = self.strata=
 
-
+        for ch in tqdm(self.chromosomes):
+            if ch is not None and new_strata is not None:
+                distance_mat = pairwise_distances(new_strata[ch],
+                                self.similarity_method,
+                                False,
+                                kwargs.get('sigma',.5),
+                                kwargs.get('window_size',10))
+                distance_matrices.append(distance_mat)
+        return np.array(distance_matrices)
 
 
     def learn_embedding(self, similarity_method, embedding_method,
                         dim=2, aggregation='median', n_strata=None, return_distance=False, print_time=False, distance_matrix_viz=None, row_colors=None,
+                        val_data=None,
                         **kwargs):
         """
 
@@ -700,44 +687,16 @@ class scHiCs:
 
         """
 
+        val_distance = None
         if self.distance is None or self.similarity_method!=similarity_method:
             self.similarity_method=similarity_method
-            distance_matrices = []
-            assert embedding_method.lower() in ['mds', 'tsne', 'umap', 'phate', 'spectral_embedding']
-
-            if not self.store_full_map:
-                assert n_strata is not None or self.keep_n_strata is not None
-                n_strata = n_strata if n_strata is not None else self.keep_n_strata
-                new_strata = self.cal_strata(n_strata)
-                #print('Strata only')
-            else:
-                #print('Full map')
-                n_strata = n_strata if n_strata is not None else self.keep_n_strata
-                new_strata = self.cal_strata(n_strata)
-                #new_strata = self.strata=
-            if print_time:
-                time1=0
-                time2=0
-                for ch in tqdm(self.chromosomes):
-                    distance_mat,t1,t2 = pairwise_distances(new_strata[ch], similarity_method, print_time, kwargs.get('sigma',.5), kwargs.get('window_size',10))
-                    time1=time1+t1
-                    time2=time2+t2
-                    distance_matrices.append(distance_mat)
-                print('Sum of time 1:', time1)
-                print('Sum of time 2:', time2)
-            else:
-                for ch in tqdm(self.chromosomes):
-                    if ch is not None and new_strata is not None:
-                        distance_mat = pairwise_distances(new_strata[ch],
-                                       similarity_method,
-                                       print_time,
-                                       kwargs.get('sigma',.5),
-                                       kwargs.get('window_size',10))
-                        distance_matrices.append(distance_mat)
-            self.distance = np.array(distance_matrices)
+            assert embedding_method.lower() in ['mds', 'nmds', 'tsne', 'umap', 'phate', 'spectral_embedding']
+            self.distance = self.get_distance(val_data, **kwargs)
 
         if aggregation == 'mean':
             final_distance = np.mean(self.distance, axis=0)
+            if val_distance is not None:
+                val_distance = np.mean(val_distance, axis=0)
         elif aggregation == 'median':
             final_distance = np.median(self.distance, axis=0)
         else:
@@ -756,7 +715,10 @@ class scHiCs:
 
 
         embedding_method = embedding_method.lower()
-        if embedding_method == 'mds':
+        if embedding_method == 'nmds':
+            embeddings = MDS(final_distance, dim)
+            embeddings = nMDS(final_distance, embeddings, momentum=.1, iteration=1000)
+        elif embedding_method == 'mds':
             embeddings = MDS(final_distance, dim)
         elif embedding_method == 'tsne':
             embeddings = tSNE(final_distance, dim,

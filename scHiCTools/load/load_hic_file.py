@@ -260,11 +260,11 @@ def load_HiC(file, genome_length, format=None, custom_format=None,
 
 
     #depth = int(np.sum(np.diag(mat[strata_n_depth:, :len(mat) - strata_n_depth])))
-    if strata_n_depth is not None:
-        depth = 0
-        for i in range(strata_n_depth):
-            depth += int(np.sum(np.diag(mat, k=i)))
-        depth = int(np.sum(mat) - depth)  # remaining reads
+    # if strata_n_depth is not None:
+    #     depth = 0
+    #     for i in range(strata_n_depth):
+    #         depth += int(np.sum(np.diag(mat, k=i)))
+    #     depth = int(np.sum(mat) - depth)  # remaining reads
         #print('%d strata downsample depth: %d' % (strata_n_depth, depth))
 
 
@@ -273,16 +273,6 @@ def load_HiC(file, genome_length, format=None, custom_format=None,
 
     if keep_n_strata:
         strata = [np.diag(mat[i:, :len(mat)-i]) for i in range(strata_offset, keep_n_strata + strata_offset)]
-        if strata_n_depth is not None:
-            if depth > 0:
-                for i in range(keep_n_strata):
-                    reads = np.sum(strata[i])
-                    if reads > 0:
-                        p1 = strata[i] / reads
-                        d1 = np.random.choice(np.arange(0, strata[i].size), size=depth, replace=True, p=p1)
-                        #d2 = np.random.choice(np.arange(0, mat.shape[0]), size=chr_downsample_depth, replace=True, p=np.sum(p1, axis=0))
-                        new_mat = np.bincount(d1, minlength=strata[i].size)  # count each bin to compute new downsampled stratum
-                        strata[i] = new_mat
     else:
         strata = [np.diag(mat[i:, :len(mat)-i]) for i in range(strata_offset, size)]
 
