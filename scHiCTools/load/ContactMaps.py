@@ -195,13 +195,10 @@ class scHiCs:
             Strata of cells.
 
         """
-
         if self.full_maps is None:
             if self.exclusive_strata:
-                #print('Keeping exclusively %d strata' % self.keep_n_strata)
                 return deepcopy({ch: self.strata[ch][n_strata - 1:n_strata] for ch in self.chromosomes})
             if self.keep_n_strata <= n_strata:
-                #print(' Only {0} strata are kept!'.format(self.keep_n_strata))
                 return deepcopy(self.strata)
             else:
                 return deepcopy({ch: self.strata[ch][:n_strata] for ch in self.chromosomes})
@@ -512,7 +509,7 @@ class scHiCs:
 
         def get_chr_mats(ch, full_maps):
             all_strata = full_maps[ch].copy()
-            if self.keep_n_strata is None or self.store_full_map:
+            if self.keep_n_strata is None:
                 #print('HiCluster processing chromosomes {}'.format(ch))
                 A = all_strata
             elif self.keep_n_strata >= all_strata.shape[-1]:
@@ -629,7 +626,6 @@ class scHiCs:
 
     def learn_embedding(self, similarity_method, embedding_method,
                         dim=2, aggregation='median', n_strata=None, return_distance=False, print_time=False, distance_matrix_viz=None, row_colors=None,
-                        val_data=None,
                         **kwargs):
         """
 
@@ -687,16 +683,44 @@ class scHiCs:
 
         """
 
-        val_distance = None
         if self.distance is None or self.similarity_method!=similarity_method:
             self.similarity_method=similarity_method
-            assert embedding_method.lower() in ['mds', 'nmds', 'tsne', 'umap', 'phate', 'spectral_embedding']
-            self.distance = self.get_distance(val_data, **kwargs)
+            distance_matrices = []
+            assert embedding_method.lower() in ['mds', 'tsne', 'umap', 'phate', 'spectral_embedding']
+
+            if not self.store_full_map:
+                assert n_strata is not None or self.keep_n_strata is not None
+                n_strata = n_strata if n_strata is not None else self.keep_n_strata
+                new_strata = self.cal_strata(n_strata)
+                #print('Strata only')
+            else:
+                #print('Full map')
+                n_strata = n_strata if n_strata is not None else self.keep_n_strata
+                new_strata = self.cal_strata(n_strata)
+                #new_strata = self.strata=
+            if print_time:
+                time1=0
+                time2=0
+                for ch in tqdm(self.chromosomes):
+                    distance_mat,t1,t2 = pairwise_distances(new_strata[ch], similarity_method, print_time, kwargs.get('sigma',.5), kwargs.get('window_size',10))
+                    time1=time1+t1
+                    time2=time2+t2
+                    distance_matrices.append(distance_mat)
+                print('Sum of time 1:', time1)
+                print('Sum of time 2:', time2)
+            else:
+                for ch in tqdm(self.chromosomes):
+                    if ch is not None and new_strata is not None:
+                        distance_mat = pairwise_distances(new_strata[ch],
+                                       similarity_method,
+                                       print_time,
+                                       kwargs.get('sigma',.5),
+                                       kwargs.get('window_size',10))
+                        distance_matrices.append(distance_mat)
+            self.distance = np.array(distance_matrices)
 
         if aggregation == 'mean':
             final_distance = np.mean(self.distance, axis=0)
-            if val_distance is not None:
-                val_distance = np.mean(val_distance, axis=0)
         elif aggregation == 'median':
             final_distance = np.median(self.distance, axis=0)
         else:
@@ -715,10 +739,7 @@ class scHiCs:
 
 
         embedding_method = embedding_method.lower()
-        if embedding_method == 'nmds':
-            embeddings = MDS(final_distance, dim)
-            embeddings = nMDS(final_distance, embeddings, momentum=.1, iteration=1000)
-        elif embedding_method == 'mds':
+        if embedding_method == 'mds':
             embeddings = MDS(final_distance, dim)
         elif embedding_method == 'tsne':
             embeddings = tSNE(final_distance, dim,
