@@ -11,6 +11,9 @@ from .hic_straw import straw
 from .cool import dump
 from .processing_utils import matrix_operation
 
+# import matplotlib.pyplot as plt
+# from matplotlib.colors import PowerNorm
+
 my_path = os.path.abspath(os.path.dirname(__file__))
 
 
@@ -267,14 +270,18 @@ def load_HiC(file, genome_length, format=None, custom_format=None,
     #     depth = int(np.sum(mat) - depth)  # remaining reads
         #print('%d strata downsample depth: %d' % (strata_n_depth, depth))
 
-
     if operations is not None:
         mat = matrix_operation(mat, operations, **kwargs)
 
+    # plt.imshow(mat, cmap='Reds', norm=PowerNorm(gamma=0.5))
+    # plt.colorbar()
+    # plt.savefig('test.png')
+    # plt.close()
+
     if keep_n_strata:
-        strata = [np.diag(mat[i:, :len(mat)-i]) for i in range(strata_offset, keep_n_strata + strata_offset)]
+        strata = [np.diag(mat, k=i) for i in range(strata_offset, keep_n_strata + strata_offset)]
     else:
-        strata = [np.diag(mat[i:, :len(mat)-i]) for i in range(strata_offset, size)]
+        strata = [np.diag(mat, k=i) for i in range(strata_offset, size)]
 
     if sparse:
         mat = coo_matrix(mat)

@@ -163,6 +163,7 @@ class scHiCs:
                     strata_offset=self.strata_offset, strata_n_depth=self.strata_n_depth,
                     keep_n_strata=keep_n_strata, operations=operations,
                     **kwargs)
+                
                 mat = np.nan_to_num(mat)
                 self.contacts[idx]+=np.sum(mat)/2+ np.trace(mat)/2
 
@@ -176,6 +177,7 @@ class scHiCs:
 
                 if keep_n_strata:
                     for strata_idx, stratum in enumerate(strata):
+                        #print(ch, np.mean(stratum), np.max(stratum))
                         self.strata[ch][strata_idx][idx, :] = stratum
 
     def cal_strata(self, n_strata):
@@ -612,6 +614,7 @@ class scHiCs:
             n_strata = n_strata if n_strata is not None else self.keep_n_strata
             new_strata = self.cal_strata(n_strata)
             #new_strata = self.strata=
+        new_strata = self.strata
 
         for ch in tqdm(self.chromosomes):
             if ch is not None and new_strata is not None:
@@ -698,6 +701,9 @@ class scHiCs:
                 n_strata = n_strata if n_strata is not None else self.keep_n_strata
                 new_strata = self.cal_strata(n_strata)
                 #new_strata = self.strata=
+
+            new_strata = self.strata
+
             if print_time:
                 time1=0
                 time2=0
